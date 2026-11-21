@@ -1,0 +1,26 @@
+# ZeroOS unit enablement (docs/os/03, OS-20, OS-25).
+#
+# systemd applies presets on the first boot (no /etc/machine-id yet), and the first
+# matching line wins, with preset files read in lexicographic order. This file sorts
+# before Aurora's 89-aurora.preset and 89-aurora-dx.preset, so its lines take precedence.
+# A `systemctl disable` in the Containerfile would be undone by Aurora's presets at first boot.
+
+# OS-20: no rootful Docker daemon; the owner runs Docker rootless (a user service).
+disable docker.socket
+# Not in os/03's preset text: keeps the rootful daemon itself off as well, should a later
+# base preset enable it directly.
+disable docker.service
+
+# OS-25: one updater only (uupd.timer stays enabled by Aurora). TODO(V-25): check this
+# timer's state on the base and whether uupd's schedule can be set to weekly.
+disable bootc-fetch-apply-updates.timer
+
+# OS-23: no countme reporting (the image also masks the timer when it exists).
+disable rpm-ostree-countme.timer
+
+# OS-24: audit active. TODO(V-30): check whether the base already enables it.
+enable auditd.service
+
+# TODO(OS-30): ship zeroos-health.service, zeroos-health.timer and
+# /usr/libexec/zeroos/zeroos-health (docs/os/06), then uncomment.
+#enable zeroos-health.timer

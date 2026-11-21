@@ -1,0 +1,305 @@
+---
+# Builds the laptop stage of the ZeroOS image (docs/os/03, OS-01, OS-25).
+# Pull requests build only. Pushes to main, the daily schedule and manual runs on main
+# also push ghcr.io/nyharena25/zeroos:testing and sign it.
+name: Build image
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+  schedule:
+    - cron: "23 5 * * *" # daily testing build
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/nyharena25/zeroos
+  TAG: testing
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Lint workflows (actionlint)
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
+
+      - name: Lint the Containerfiles (hadolint)
+        run: |
+          for f in Containerfile installer/Containerfile; do
+            echo "== $f"
+            docker run --rm -i hadolint/hadolint:v2.15.1@sha256:32dac94127fd60b7b7e3fbfc65e1383b9b5e25c9bfd7b8536de7a539fe68a12d < "$f"
+          done
+
+      - name: Lint shell scripts (shellcheck)
+        run: docker run --rm -v "$PWD:/mnt" koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d build_files/build.sh installer/build.sh
+
+      - name: Check configuration files
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || sudo apt-get install -y --no-install-recommends python3-yaml
+          python3 ci/check-configs.py
+
+      - name: Validate the installer kickstart (pykickstart, Fedora 45 syntax)
+        run: |
+          zeros=0000000000000000000000000000000000000000000000000000000000000000
+          sed -e "s|@PAYLOAD_SOURCE@|ghcr.io/nyharena25/zeroos@sha256:$zeros|" \
+              -e "s|@PAYLOAD_TARGET@|ghcr.io/nyharena25/zeroos:testing|" \
+              installer/zeroos.ks.in > "$RUNNER_TEMP/zeroos.ks"
+          pipx run --spec pykickstart==3.77 ksvalidator -v F45 "$RUNNER_TEMP/zeroos.ks"
+
+  build:
+    name: Build laptop image
+    needs: lint
+    runs-on: ubuntu-26.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      # Set only when the image was pushed and its signature verified.
+      digest: ${{ steps.published.outputs.digest }}
+    env:
+      PUBLISH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    # TODO(OS-28): build zero-common and the twin stage for x86_64 and aarch64 (a matrix with
+    #   an arm64 runner), once those stages exist in the Containerfile (docs/os/11).
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Free disk space
+        uses: ublue-os/remove-unwanted-software@695eb75bc387dbcd9685a8e72d23439d8686cba6 # main, 2025-10-10
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: v3.1.4
+
+      - name: Read the base image reference
+        id: base
+        run: |
+          ref=$(awk '$1 == "FROM" && $NF == "laptop" { print $2 }' Containerfile)
+          if [[ "$ref" != *@sha256:* ]]; then
+            echo "::error file=Containerfile::the laptop base image is not pinned by digest: '$ref'"
+            exit 1
+          fi
+          name=${ref%@*}
+          {
+            echo "ref=$ref"
+            echo "pinned=${name%:*}@${ref#*@}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify the base image signature
+        env:
+          BASE: ${{ steps.base.outputs.pinned }}
+        run: cosign verify --key keys/ublue-os.pub "$BASE" > /dev/null
+
+      - name: Pull the base image
+        env:
+          BASE: ${{ steps.base.outputs.pinned }}
+        run: |
+          podman pull "$BASE"
+          kernel=$(podman image inspect --format '{{ index .Labels "ostree.linux" }}' "$BASE")
+          version=$(podman image inspect --format '{{ index .Labels "org.opencontainers.image.version" }}' "$BASE")
+          {
+            echo "### Base image"
+            echo "- Reference: \`$BASE\`"
+            echo "- Version: \`$version\`"
+            echo "- Kernel: \`$kernel\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # TODO(OS-03): apply the tracking rule here: compare the kernel branch of the
+          #   stable and latest tags with kernel.org's releases.json and report a needed switch.
+
+      - name: Check the signing key
+        if: env.PUBLISH == 'true'
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          if ! grep -qx -- '-----BEGIN PUBLIC KEY-----' cosign.pub; then
+            echo "::error file=cosign.pub::cosign.pub is still the placeholder; nothing is published unsigned (see README)"
+            exit 1
+          fi
+          if [[ -z "$COSIGN_PRIVATE_KEY" ]]; then
+            echo "::error::the COSIGN_PRIVATE_KEY secret is not set; nothing is published unsigned"
+            exit 1
+          fi
+          body() { grep -v -- '-----' "$1" | tr -d ' \r\n'; }
+          cosign public-key --key env://COSIGN_PRIVATE_KEY > "$RUNNER_TEMP/derived.pub"
+          if [[ "$(body cosign.pub)" != "$(body "$RUNNER_TEMP/derived.pub")" ]]; then
+            echo "::error file=cosign.pub::cosign.pub does not match the COSIGN_PRIVATE_KEY secret"
+            exit 1
+          fi
+
+      - name: Build the laptop stage
+        run: |
+          podman build \
+            --target laptop \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --label "org.opencontainers.image.version=$TAG-$(date -u +%Y%m%d)" \
+            --tag "localhost/zeroos:$TAG" \
+            --file Containerfile \
+            .
+          # TODO(docs/os/03, 12): licence gate, failing when a package licence is not on the
+          #   allowlist of docs/os/12 (V-31).
+
+      - name: Log in to GHCR
+        if: env.PUBLISH == 'true'
+        env:
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$REGISTRY_PASSWORD" | podman login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          echo "$REGISTRY_PASSWORD" | cosign login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Push
+        id: push
+        if: env.PUBLISH == 'true'
+        run: |
+          podman push --digestfile "$RUNNER_TEMP/digest" "localhost/zeroos:$TAG" "docker://$IMAGE:$TAG"
+          echo "digest=$(< "$RUNNER_TEMP/digest")" >> "$GITHUB_OUTPUT"
+
+      - name: Sign
+        if: env.PUBLISH == 'true'
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          # bootc and podman (containers/image) read only the legacy signature format, so
+          # cosign 3 is told not to write the new bundle format:
+          # https://github.com/containers/container-libs/issues/388
+          # https://github.com/coreos/rpm-ostree/issues/5509
+          cosign sign --yes --new-bundle-format=false --use-signing-config=false \
+            --key env://COSIGN_PRIVATE_KEY "$IMAGE@$DIGEST"
+
+      - name: Verify the published signature
+        id: published
+        if: env.PUBLISH == 'true'
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          cosign verify --key cosign.pub "$IMAGE@$DIGEST" > /dev/null
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Published"
+            echo "- \`$IMAGE:$TAG\`"
+            echo "- Digest: \`$DIGEST\` (signed, signature verified with cosign.pub)"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # TODO(docs/os/03, 15): VM smoke test (boot, login screen, zeroos-kconfig-check)
+          #   that promotes testing to stable.
+
+  # Installer ISO (OS-37): image-builder's generic-iso type turns installer/Containerfile, an
+  # interactive Anaconda environment, into an ISO that installs the image just signed above.
+  # Heavy, so it runs only after a signed push from main (pushes and manual runs), never on
+  # pull requests or the daily schedule. The ISO is kept as an Actions artifact for 14 days;
+  # it is not attached to releases, whose assets are capped at 2 GiB per file.
+  installer:
+    name: Build installer ISO
+    needs: build
+    if: needs.build.outputs.digest != '' && github.event_name != 'schedule'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      DIGEST: ${{ needs.build.outputs.digest }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Free disk space
+        uses: ublue-os/remove-unwanted-software@695eb75bc387dbcd9685a8e72d23439d8686cba6 # main, 2025-10-10
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: v3.1.4
+
+      - name: Verify the payload signature
+        run: cosign verify --key cosign.pub "$IMAGE@$DIGEST" > /dev/null
+
+      - name: Build the installer environment
+        run: |
+          sudo podman build \
+            --file installer/Containerfile \
+            --build-arg "PAYLOAD_SOURCE=$IMAGE@$DIGEST" \
+            --build-arg "PAYLOAD_TARGET=$IMAGE:$TAG" \
+            --tag localhost/zeroos-installer:latest \
+            .
+
+      - name: Build the ISO (image-builder generic-iso)
+        run: |
+          mkdir -p output
+          sudo podman run --rm --privileged \
+            --security-opt label=type:unconfined_t \
+            -v "$PWD/output:/output" \
+            -v /var/lib/containers/storage:/var/lib/containers/storage \
+            ghcr.io/osbuild/image-builder-cli:v91.0.0@sha256:f33fa06204ab382eed24979bc99e880b221fbded5a369a0f40ded881d649d392 \
+            build \
+            --output-dir /output \
+            --bootc-ref localhost/zeroos-installer:latest \
+            --bootc-default-fs ext4 \
+            generic-iso
+
+      - name: Name and checksum the ISO
+        id: iso
+        run: |
+          mapfile -t isos < <(sudo find output -type f -name '*.iso')
+          if [[ ${#isos[@]} -ne 1 ]]; then
+            echo "::error::expected one ISO in output/, found ${#isos[@]}"
+            sudo find output -type f
+            exit 1
+          fi
+          name="zeroos-installer-$(date -u +%Y%m%d)-${DIGEST:7:12}.iso"
+          sudo mv "${isos[0]}" "$RUNNER_TEMP/$name"
+          sudo chown "$(id -u):$(id -g)" "$RUNNER_TEMP/$name"
+          (cd "$RUNNER_TEMP" && sha256sum "$name" > "$name.sha256")
+          size=$(stat -c %s "$RUNNER_TEMP/$name")
+          {
+            echo "path=$RUNNER_TEMP/$name"
+            echo "checksum=$RUNNER_TEMP/$name.sha256"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Installer ISO"
+            echo "- File: \`$name\` ($((size / 1048576)) MiB), Actions artifact kept 14 days"
+            echo "- SHA-256: \`$(cut -d' ' -f1 "$RUNNER_TEMP/$name.sha256")\`"
+            echo "- Installs \`$IMAGE@$DIGEST\`, then follows \`$IMAGE:$TAG\`"
+            echo "- Interactive: Anaconda stops at Installation Destination; see the README before using it (V-39 first)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the ISO
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: ${{ steps.iso.outputs.path }}
+          archive: false
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Upload the checksum
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: ${{ steps.iso.outputs.checksum }}
+          archive: false
+          retention-days: 14
+          if-no-files-found: error

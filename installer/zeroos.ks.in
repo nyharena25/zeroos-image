@@ -1,0 +1,43 @@
+# ZeroOS installer kickstart (docs/os/03, 04, OS-37). installer/build.sh fills in the two
+# @...@ references and installs it as Anaconda's interactive-defaults.ks: Anaconda takes what
+# is written here and asks for everything else in its interface.
+#
+# SAFETY: Windows shares the laptop's disk; nvme0n1p1 to p4 must stay untouched. This file
+# therefore carries NO storage commands (no clearpart, zerombr, autopart, ignoredisk, part,
+# reqpart, logvol, volgroup, raid or btrfs). Anaconda stops at Installation Destination and
+# the owner partitions by hand (README, "Install the laptop"). Never add unattended
+# partitioning here: it would have to name its target partitions explicitly and never clear
+# the disk (V-39). ci/check-configs.py and installer/build.sh fail if a storage command appears.
+
+# Payload: the signed ZeroOS image, pinned by digest. The installer's signature policy
+# (installer/build.sh) makes the pull fail unless the image is signed with the ZeroOS key.
+# The installed system follows the target reference for updates.
+bootc --source-imgref=registry:@PAYLOAD_SOURCE@ --target-imgref=@PAYLOAD_TARGET@
+
+# Queue Universal Blue's kernel and NVIDIA module certificate for MOK enrolment (docs/os/02,
+# 04), as Aurora's own installer does. On the next boot shim's MokManager asks to enrol it:
+# choose "Enroll MOK" and type the password below, which Universal Blue publishes for exactly
+# this confirmation; it is not a secret. TODO(V-39): confirm the deployment path on a VM.
+%post --erroronfail --nochroot --interpreter=/usr/bin/bash
+set -euo pipefail
+if [[ ! -d /sys/firmware/efi ]]; then
+    echo "Not booted in EFI mode; MOK enrolment skipped."
+    exit 0
+fi
+shopt -s nullglob
+certs=(
+    /mnt/sysimage/etc/pki/akmods/certs/akmods-ublue.der
+    /mnt/sysroot/ostree/deploy/*/deploy/*/etc/pki/akmods/certs/akmods-ublue.der
+    /mnt/sysimage/ostree/deploy/*/deploy/*/etc/pki/akmods/certs/akmods-ublue.der
+)
+cert=""
+for c in "${certs[@]}"; do
+    if [[ -f "$c" ]]; then cert=$c; break; fi
+done
+if [[ -z "$cert" ]]; then
+    echo "akmods-ublue.der not found in the installed deployment; enrol it by hand before booting with Secure Boot." >&2
+    exit 1
+fi
+mokutil --timeout -1 || true
+printf 'universalblue\nuniversalblue\n' | mokutil --import "$cert" || echo "mokutil --import reported an error (the key may already be enrolled)."
+%end
