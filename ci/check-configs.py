@@ -18,6 +18,10 @@ ROOT = Path(__file__).resolve().parent.parent
 SYS = ROOT / "system_files"
 REGISTRY = "ghcr.io/nyharena25/zeroos"
 KEY_PATH = "/etc/pki/containers/zeroos-cosign.pub"
+STORAGE_COMMANDS = {
+    "autopart", "btrfs", "clearpart", "ignoredisk", "logvol", "part", "partition",
+    "raid", "reqpart", "volgroup", "zerombr",
+}
 
 errors: list[str] = []
 
@@ -31,6 +35,21 @@ def lines(path: Path) -> list[str]:
     """Non-empty lines that are not comments."""
     text = path.read_text(encoding="utf-8").splitlines()
     return [line for line in text if line.strip() and not line.lstrip().startswith(("#", ";"))]
+
+
+def kickstart_commands(path: Path) -> list[str]:
+    """First word of each top-level kickstart command, skipping %post/%pre/%packages bodies."""
+    commands: list[str] = []
+    in_section = False
+    for line in lines(path):
+        word = line.split()[0]
+        if word == "%end":
+            in_section = False
+        elif word.startswith("%") and word != "%include":
+            in_section = True
+        elif not in_section:
+            commands.append(word)
+    return commands
 
 
 def main() -> int:
@@ -62,8 +81,18 @@ def main() -> int:
         for line in lines(conf):
             check(re.fullmatch(r"install [a-z0-9_-]+ /bin/false", line) is not None, f"{conf.name}: bad line {line!r}")
 
-    build_sh = ROOT / "build_files/build.sh"
-    check(build_sh.stat().st_mode & 0o111 != 0, "build_files/build.sh is not executable (the Containerfile runs it directly)")
+    for script in ("build_files/build.sh", "installer/build.sh"):
+        check((ROOT / script).stat().st_mode & 0o111 != 0, f"{script} is not executable (a Containerfile runs it directly)")
+
+    # OS-37: Windows shares the laptop's disk, so the installer kickstart names the payload only
+    # and never carries storage commands (no disk wipe, no "first disk found").
+    kickstart = ROOT / "installer/zeroos.ks.in"
+    ks_commands = kickstart_commands(kickstart)
+    for word in sorted(set(ks_commands) & STORAGE_COMMANDS):
+        check(False, f"{kickstart.name}: storage command {word!r} is not allowed (OS-37)")
+    check(ks_commands.count("bootc") == 1, f"{kickstart.name}: needs exactly one bootc line")
+    check("@PAYLOAD_SOURCE@" in kickstart.read_text(encoding="utf-8"), f"{kickstart.name}: payload source placeholder missing")
+    yaml.safe_load((ROOT / "installer/iso.yaml").read_text(encoding="utf-8"))
 
     pub = (ROOT / "cosign.pub").read_text(encoding="utf-8")
     check(pub.startswith("PLACEHOLDER") or pub.startswith("-----BEGIN PUBLIC KEY-----"), "cosign.pub: neither placeholder nor PEM")

@@ -1,0 +1,12 @@
+# ISO boot menu, read by image-builder's generic-iso type from
+# /usr/lib/image-builder/bootc/iso.yaml (installer/build.sh installs it there).
+label: "ZeroOS-Installer"
+grub2:
+  timeout: 10
+  entries:
+    - name: "Install ZeroOS"
+      linux: ${kernelpath} ${root} inst.graphical
+      initrd: ${initrdpath}
+    - name: "Install ZeroOS (basic graphics)"
+      linux: ${kernelpath} ${root} inst.graphical nomodeset
+      initrd: ${initrdpath}

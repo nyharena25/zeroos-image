@@ -1,0 +1,28 @@
+# ZeroOS installer environment (docs/os/03, 04, OS-37). image-builder's generic-iso type turns
+# this container into an interactive Anaconda ISO that installs the signed ZeroOS image from
+# the registry (.github/workflows/build.yml, job "installer"). Build context: the repository
+# root. Adapted from image-builder's Anaconda installer examples
+# (https://github.com/osbuild/image-builder/blob/main/doc/20-advanced/20-bootc/10-isos.md),
+# which upstream tested on Rawhide; Fedora 45 is checked by V-39.
+#
+# SAFETY: Windows shares the laptop's disk. The kickstart (installer/zeroos.ks.in) carries no
+# storage commands, so Anaconda waits for the owner to partition by hand.
+
+# Fedora 45 bootc, pinned 2026-11-22 (version 45.20261121.0). Only the installer runs on it;
+# the installed system is the ZeroOS image.
+FROM quay.io/fedora/fedora-bootc:45@sha256:881c4dd0acb6cc416d5fd484582b79b110eed31e4c971b1fc7d2990be2b18970
+
+# The image Anaconda installs, pinned by digest, and the reference the installed system
+# follows for updates. TODO(docs/os/03): use :stable once the smoke-tested promotion exists.
+ARG PAYLOAD_SOURCE
+ARG PAYLOAD_TARGET=ghcr.io/nyharena25/zeroos:testing
+
+LABEL org.opencontainers.image.title="ZeroOS installer" \
+      org.opencontainers.image.source="https://github.com/nyharena25/zeroos-image" \
+      org.opencontainers.image.licenses="Apache-2.0"
+
+RUN --mount=type=bind,source=.,target=/ctx \
+    --mount=type=cache,dst=/var/cache \
+    --mount=type=cache,dst=/var/log \
+    --mount=type=tmpfs,dst=/tmp \
+    /ctx/installer/build.sh
