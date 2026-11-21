@@ -1,5 +1,5 @@
 # ZeroOS (docs/os/03, OS-25): read sigstore signatures attached to the ZeroOS image,
-# so the sigstoreSigned policy entry in /etc/containers/policy.json can check them.
+# so the sigstoreSigned entry merged into the containers policy can check them.
 docker:
   ghcr.io/nyharena25/zeroos:
     use-sigstore-attachments: true

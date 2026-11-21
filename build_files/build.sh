@@ -14,7 +14,8 @@ cp -rv /ctx/system_files/. /
 install -D -m 0644 /ctx/cosign.pub /etc/pki/containers/zeroos-cosign.pub
 
 ### Packages ZeroOS adds (docs/os/03, 09) ###########################################
-# OS-20: rootless Docker. Aurora installs docker-ce but not docker-ce-rootless-extras (06).
+# OS-20: rootless Docker. docs/os/06 says Aurora lacks docker-ce-rootless-extras; the base
+# pinned on 2026-11-22 already has it (29.10.0), so this is a no-op kept as a guarantee.
 # The repository is named explicitly, so this works whether or not the base left it enabled.
 dnf -y install --enablerepo=docker-ce-stable docker-ce-rootless-extras
 # TODO(09, V-32): further image packages (snapper, pam-u2f, tpm2-tss, ...) once their
@@ -23,8 +24,11 @@ dnf -y install --enablerepo=docker-ce-stable docker-ce-rootless-extras
 dnf clean all
 
 ### Signature policy for the ZeroOS registry (docs/os/03, OS-25) #####################
-# Merged into the policy the base ships, so Universal Blue's own entries stay in place.
-python3 /ctx/merge-containers-policy.py /ctx/containers-policy-zeroos.json /etc/containers/policy.json
+# Merged in place into the policy in effect, so Universal Blue's own entries stay. Aurora ships
+# it at /usr/share/containers/policy.json and has no /etc/containers/policy.json (first CI
+# build, 2026-11-21); the script takes the first path that exists.
+python3 /ctx/merge-containers-policy.py /ctx/containers-policy-zeroos.json \
+    /etc/containers/policy.json /usr/share/containers/policy.json
 
 ### Telemetry (docs/os/06, OS-23) #####################################################
 # The preset also disables the timer; masking keeps it off even if something enables it.

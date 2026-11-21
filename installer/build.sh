@@ -34,7 +34,8 @@ install -D -m 0644 /ctx/installer/iso.yaml /usr/lib/image-builder/bootc/iso.yaml
 ### Signature policy: the installer verifies the image it pulls (docs/os/03, OS-25) ##########
 install -D -m 0644 /ctx/system_files/etc/containers/registries.d/zeroos.yaml /etc/containers/registries.d/zeroos.yaml
 install -D -m 0644 /ctx/cosign.pub /etc/pki/containers/zeroos-cosign.pub
-python3 /ctx/build_files/merge-containers-policy.py /ctx/build_files/containers-policy-zeroos.json /etc/containers/policy.json
+python3 /ctx/build_files/merge-containers-policy.py /ctx/build_files/containers-policy-zeroos.json \
+    /etc/containers/policy.json /usr/share/containers/policy.json
 
 ### Kickstart: payload only, no storage commands (OS-37; see installer/zeroos.ks.in) ##########
 ks=/usr/share/anaconda/interactive-defaults.ks
