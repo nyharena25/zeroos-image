@@ -1,0 +1,8 @@
+# Never commit secrets: the private half of the signing key, environment files, tokens.
+cosign.key
+*.key
+.env
+.env.*
+
+# Local Python bytecode
+__pycache__/

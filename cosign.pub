@@ -1,0 +1,12 @@
+PLACEHOLDER: this is not a key yet.
+
+The owner replaces this file with the public half of the CI signing key:
+
+    cosign generate-key-pair
+
+then stores cosign.key and its password as the COSIGN_PRIVATE_KEY and COSIGN_PASSWORD
+repository secrets, and commits only this cosign.pub (cosign.key is git-ignored).
+
+The image installs this file as /etc/pki/containers/zeroos-cosign.pub. While it is a
+placeholder, the image's signature policy refuses every ghcr.io/nyharena25/zeroos image,
+and CI refuses to publish.

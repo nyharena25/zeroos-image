@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- /etc/firewalld/zones/zeroos-external.xml (docs/os/06, OS-21).
+     Default zone for physical interfaces, set at build time by build_files/build.sh.
+     No target is set: ICMP is accepted (IPv6 needs it) and every other unsolicited packet is rejected.
+     The XML declaration must stay on the first line, so this comment follows it. -->
+<zone>
+  <short>ZeroOS external</short>
+  <description>Physical networks. ICMP is accepted and DHCPv6 client replies are allowed; every other unsolicited incoming packet is rejected.</description>
+  <service name="dhcpv6-client"/>
+</zone>

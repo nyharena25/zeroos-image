@@ -1,0 +1,7 @@
+# ZeroOS kernel arguments (docs/os/02, OS-16), added to Aurora's 00-nvidia.toml.
+# intel_iommu=on: DMA isolation, off by default in Fedora's kernel config.
+#   TODO(V-08): check NVIDIA (nvidia-smi, a CUDA run) and Thunderbolt with it on the laptop.
+# slab_nomerge, page_alloc.shuffle=1: heap-corruption hardening.
+# vsyscall=none: removes the legacy vsyscall page; breaks only very old static binaries.
+# audit=1 audit_backlog_limit=8192: audit active from early boot.
+kargs = ["intel_iommu=on", "slab_nomerge", "page_alloc.shuffle=1", "vsyscall=none", "audit=1", "audit_backlog_limit=8192"]

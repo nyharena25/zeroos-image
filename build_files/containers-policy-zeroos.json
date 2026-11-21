@@ -1,0 +1,11 @@
+{
+    "ghcr.io/nyharena25/zeroos": [
+        {
+            "type": "sigstoreSigned",
+            "keyPath": "/etc/pki/containers/zeroos-cosign.pub",
+            "signedIdentity": {
+                "type": "matchRepository"
+            }
+        }
+    ]
+}
